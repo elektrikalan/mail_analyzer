@@ -6,15 +6,14 @@ KEYWORDS = [
     "token"
 ]
 
-def analyze_keywords(text: str):
-
+def analyze_keywords(text: str, keywords: list = None):
+    """Return a list of matched keywords from the provided text."""
+    keywords = keywords or KEYWORDS
+    lower_text = (text or "").lower()
     findings = []
 
-    lower_text = text.lower()
-
-    for keyword in KEYWORDS:
-
-        if keyword in lower_text:
+    for keyword in keywords:
+        if keyword and keyword.lower() in lower_text:
             findings.append(keyword)
 
     return findings

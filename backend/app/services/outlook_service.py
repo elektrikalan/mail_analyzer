@@ -76,57 +76,70 @@ def search_mails(query_params: dict):
     """
     namespace = get_outlook_namespace()
     results = []
-    
-    # Restrict string builder for Outlook
-    # Example: "[ReceivedTime] >= '01/01/2023 12:00 AM' AND [Subject] = 'Test'"
+
+    subject = (query_params.get("subject") or "").strip()
+    sender = (query_params.get("sender") or "").strip()
+    body_contains = (query_params.get("body_contains") or "").strip()
+
     filter_parts = []
-    
     if query_params.get("date_from"):
-        # Format must be MM/DD/YYYY HH:MM AM/PM
         dt_str = query_params["date_from"].strftime("%m/%d/%Y %I:%M %p")
         filter_parts.append(f"[ReceivedTime] >= '{dt_str}'")
-        
-    if query_params.get("subject"):
-        filter_parts.append(f"@SQL=\"urn:schemas:httpmail:subject\" LIKE '%{query_params['subject']}%'")
+
+    if query_params.get("date_to"):
+        dt_to_str = query_params["date_to"].strftime("%m/%d/%Y %I:%M %p")
+        filter_parts.append(f"[ReceivedTime] <= '{dt_to_str}'")
+
+    if subject:
+        safe_subject = subject.replace("'", "''")
+        filter_parts.append(f"[Subject] LIKE '%{safe_subject}%'")
+
+    if sender:
+        safe_sender = sender.replace("'", "''")
+        filter_parts.append(f"[SenderEmailAddress] LIKE '%{safe_sender}%'")
 
     filter_str = " AND ".join(filter_parts) if filter_parts else ""
-
     folders = enumerate_all_folders()
-    
+
     for folder_info in folders:
         folder_obj = folder_info["obj"]
         try:
             items = folder_obj.Items
             if filter_str:
-                items = items.Restrict(filter_str)
-            
-            # Additional manual filtering for fields that Restrict might not handle well
+                try:
+                    items = items.Restrict(filter_str)
+                except Exception as restrict_error:
+                    print(f"Restrict filter failed for folder {folder_info['name']}: {restrict_error}")
+                    items = folder_obj.Items
+
             count = 0
             for item in items:
-                if count > 200: break # Safety limit per folder
-                
-                if item.Class != 43: continue # MailItem
-                
-                # Check body_contains manually if provided (Restrict on Body can be slow/unreliable)
-                if query_params.get("body_contains"):
-                    if query_params["body_contains"].lower() not in item.Body.lower():
+                if count > 200:
+                    break
+
+                if getattr(item, "Class", None) != 43:
+                    continue
+
+                if body_contains:
+                    body_text = (item.Body or "").lower()
+                    if body_contains.lower() not in body_text:
                         continue
 
                 results.append({
-                    "message_id": item.EntryID,
-                    "subject": item.Subject,
-                    "sender": item.SenderEmailAddress,
-                    "received_at": item.ReceivedTime,
+                    "message_id": getattr(item, "EntryID", "N/A"),
+                    "subject": getattr(item, "Subject", ""),
+                    "sender": getattr(item, "SenderEmailAddress", ""),
+                    "received_at": getattr(item, "ReceivedTime", None),
                     "folder_path": folder_info["full_path"],
                     "store": folder_info["store"],
-                    "body": item.Body,
+                    "body": getattr(item, "Body", ""),
                     "attachments": [att.FileName for att in item.Attachments]
                 })
                 count += 1
         except Exception as e:
             print(f"Error searching folder {folder_info['name']}: {e}")
             continue
-            
+
     return results
 
 def extract_mails(folder_obj):
