@@ -77,17 +77,36 @@ def _navigate_to_folder(pf_root, index_path: list):
 
 def _parse_message(msg, folder_path: str, store_name: str) -> dict:
     """Convert a pypff message object to a plain dict."""
+    import re
     try:
         body_bytes = msg.get_plain_text_body()
         body = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
     except Exception:
         body = ""
 
+    # Attempt to find a real email address in headers if sender_name is just a name
+    name = getattr(msg, "sender_name", "") or ""
+    email = ""
+    try:
+        headers = msg.get_transport_headers() or ""
+        # Simple regex to find From: Name <email@domain.com> or From: email@domain.com
+        from_match = re.search(r"From:.*<(.+?)>", headers, re.IGNORECASE)
+        if from_match:
+            email = from_match.group(1)
+        else:
+            # Fallback to direct email-like string in headers
+            email_match = re.search(r"From:.*?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", headers, re.IGNORECASE)
+            if email_match:
+                email = email_match.group(1)
+    except Exception:
+        pass
+
+    sender_info = f"{name} <{email}>" if name and email else (email or name or "Unknown")
+
     dt = None
     try:
         raw = msg.delivery_time
         if raw:
-            # pypff returns a datetime-like object
             dt = datetime.datetime(raw.year, raw.month, raw.day,
                                    raw.hours, raw.minutes, raw.seconds)
     except Exception:
@@ -96,7 +115,7 @@ def _parse_message(msg, folder_path: str, store_name: str) -> dict:
     return {
         "message_id":  str(getattr(msg, "identifier", id(msg))),
         "subject":     getattr(msg, "subject", "") or "",
-        "sender":      getattr(msg, "sender_name", "") or "",
+        "sender":      sender_info,
         "body":        body[:20_000],
         "received_at": dt,
         "folder_path": folder_path,

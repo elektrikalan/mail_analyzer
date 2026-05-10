@@ -221,6 +221,33 @@ def search_mails(query_params: dict):
     return results
 
 
+def _get_sender_info(item):
+    """
+    Intelligently extracts sender info. For Exchange/Domain environments, 
+    resolves 'EX' types to SMTP addresses. Returns 'Name <Email>' format.
+    """
+    try:
+        name = getattr(item, "SenderName", "")
+        email = getattr(item, "SenderEmailAddress", "")
+        
+        # Resolve Exchange internal addresses to SMTP
+        if getattr(item, "SenderEmailType", "") == "EX":
+            try:
+                sender = item.Sender
+                if sender:
+                    ex_user = sender.GetExchangeUser()
+                    if ex_user:
+                        email = ex_user.PrimarySmtpAddress or email
+            except Exception:
+                pass
+        
+        if name and email and name != email:
+            return f"{name} <{email}>"
+        return email or name or "Unknown"
+    except Exception:
+        return "Unknown"
+
+
 def _search_folder_recursive(folder_com, store_name, filter_str, body_contains, results):
     """Recursively search a COM folder tree, appending plain-dict results."""
     try:
@@ -244,7 +271,7 @@ def _search_folder_recursive(folder_com, store_name, filter_str, body_contains, 
                 results.append({
                     "message_id":  getattr(item, "EntryID", "N/A"),
                     "subject":     getattr(item, "Subject", ""),
-                    "sender":      getattr(item, "SenderEmailAddress", ""),
+                    "sender":      _get_sender_info(item),
                     "received_at": getattr(item, "ReceivedTime", None),
                     "folder_path": folder_com.FolderPath,
                     "store":       store_name,
@@ -288,7 +315,7 @@ def extract_mails(folder_entry_id: str, limit: int = 200):
                 mails.append({
                     "message_id":  getattr(item, "EntryID", "N/A"),
                     "subject":     getattr(item, "Subject", "No Subject"),
-                    "sender":      getattr(item, "SenderEmailAddress", "Unknown"),
+                    "sender":      _get_sender_info(item),
                     "body":        (getattr(item, "Body", "") or "")[:20_000],
                     "received_at": getattr(item, "ReceivedTime", None),
                     "folder_path": folder_com.FolderPath,
