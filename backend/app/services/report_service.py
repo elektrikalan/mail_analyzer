@@ -1,6 +1,6 @@
 import pandas as pd
 from sqlalchemy.orm import Session
-from app.models.mail import Mail
+from ..models.mail import Mail
 import os
 from datetime import datetime
 

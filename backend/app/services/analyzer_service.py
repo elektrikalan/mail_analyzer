@@ -1,5 +1,5 @@
-from app.services.keyword_service import analyze_keywords
-from app.services.regex_service import analyze_regex
+from .keyword_service import analyze_keywords
+from .regex_service import analyze_regex
 
 
 def analyze_mail_content(body: str, custom_keywords: list = None, custom_regex: dict = None):

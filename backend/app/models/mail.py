@@ -5,7 +5,7 @@ from sqlalchemy import Text
 from sqlalchemy import DateTime
 from sqlalchemy import JSON
 
-from app.core.database import Base
+from ..core.database import Base
 
 class Mail(Base):
     __tablename__ = "mails"

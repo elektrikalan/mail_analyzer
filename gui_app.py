@@ -10,11 +10,11 @@ import os
 # Add backend to path
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 
-from app.core.database import init_db, SessionLocal
-from app.models.mail import Mail
-from app.services.outlook_service import enumerate_all_folders, search_mails, extract_mails
-from app.services.analyzer_service import analyze_mail_content
-from app.workers.scan_worker import process_mail
+from backend.app.core.database import init_db, SessionLocal
+from backend.app.models.mail import Mail
+from backend.app.services.outlook_service import enumerate_all_folders, search_mails, extract_mails
+from backend.app.services.analyzer_service import analyze_mail_content
+from backend.app.workers.scan_worker import process_mail
 
 # Appearance Settings
 ctk.set_appearance_mode("Dark")
@@ -48,7 +48,8 @@ class MailAnalyzerPro(ctk.CTk):
         # Set Window Icon
         try:
             self.iconbitmap("assets/icon.ico")
-        except:
+        except Exception as icon_error:
+            print(f"Warning: Could not load window icon: {icon_error}")
             pass
             
         # Initialize DB
@@ -71,7 +72,8 @@ class MailAnalyzerPro(ctk.CTk):
             logo_img = ctk.CTkImage(Image.open("assets/icon.png"), size=(40, 40))
             self.logo_icon = ctk.CTkLabel(self.logo_frame, image=logo_img, text="")
             self.logo_icon.pack(side="left", padx=(0, 10))
-        except:
+        except Exception as logo_error:
+            print(f"Warning: Could not load logo image: {logo_error}")
             pass
             
         self.logo_text = ctk.CTkLabel(self.logo_frame, text="ANALYZER", font=ctk.CTkFont(size=18, weight="bold"))
@@ -221,7 +223,7 @@ class MailAnalyzerPro(ctk.CTk):
         threading.Thread(target=self.run_scan, args=(entry_id,), daemon=True).start()
 
     def run_scan(self, entry_id):
-        from app.services.outlook_service import get_folder_by_id
+        from backend.app.services.outlook_service import get_folder_by_id
         folder_obj = get_folder_by_id(entry_id)
         if not folder_obj:
             self.after(0, lambda: messagebox.showerror("Error", "Could not access folder."))
@@ -229,16 +231,16 @@ class MailAnalyzerPro(ctk.CTk):
             
         mails = extract_mails(folder_obj)
         db = SessionLocal()
-        
-        count = 0
-        total_mails = len(mails)
-        for mail in mails:
-            analysis = analyze_mail_content(mail["body"])
-            process_mail(db, {**mail, **analysis})
-            count += 1
-            self.after(0, lambda c=count, t=total_mails: self.status_text.configure(text=f"Processed {c}/{t} mails..."))
-            
-        db.close()
+        try:
+            count = 0
+            total_mails = len(mails)
+            for mail in mails:
+                analysis = analyze_mail_content(mail["body"])
+                process_mail(db, {**mail, **analysis})
+                count += 1
+                self.after(0, lambda c=count, t=total_mails: self.status_text.configure(text=f"Processed {c}/{t} mails..."))
+        finally:
+            db.close()
         self.after(0, lambda: messagebox.showinfo("Scan Complete", f"Successfully analyzed {len(mails)} mails."))
         self.after(0, self.show_results)
 
@@ -249,7 +251,7 @@ class MailAnalyzerPro(ctk.CTk):
         header = ctk.CTkLabel(self.main_container, text="Advanced Forensic Search", font=ctk.CTkFont(size=26, weight="bold"), anchor="w")
         header.pack(fill="x", pady=(0, 30))
         
-        search_box = ctk.CTkFrame(self.main_container, fg_color=COLORS["card_bg"], corner_radius=15, pady=30)
+        search_box = ctk.CTkFrame(self.main_container, fg_color=COLORS["card_bg"], corner_radius=15)
         search_box.pack(fill="x")
         
         self.sub_entry = self.create_input(search_box, "Subject Pattern:", 0)
@@ -296,7 +298,7 @@ class MailAnalyzerPro(ctk.CTk):
         self.show_results(compact=True)
 
     def export_report(self):
-        from app.services.report_service import generate_excel_report
+        from backend.app.services.report_service import generate_excel_report
         db = SessionLocal()
         path = generate_excel_report(db)
         db.close()
@@ -314,11 +316,13 @@ class MailAnalyzerPro(ctk.CTk):
             found = search_mails(params)
             
             db = SessionLocal()
-            for mail in found:
-                analysis = analyze_mail_content(mail["body"])
-                process_mail(db, {**mail, **analysis})
-            db.close()
-            
+            try:
+                for mail in found:
+                    analysis = analyze_mail_content(mail["body"])
+                    process_mail(db, {**mail, **analysis})
+            finally:
+                db.close()
+                
             self.after(0, lambda: messagebox.showinfo("Search Complete", f"Found and analyzed {len(found)} matching mails."))
             self.after(0, self.show_results)
             

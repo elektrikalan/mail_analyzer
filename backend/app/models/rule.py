@@ -3,7 +3,7 @@ from sqlalchemy import Integer
 from sqlalchemy import String
 from sqlalchemy import JSON
 
-from app.core.database import Base
+from ..core.database import Base
 
 class Rule(Base):
     __tablename__ = "rules"

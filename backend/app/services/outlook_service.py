@@ -18,7 +18,8 @@ def get_outlook_namespace():
         namespace = outlook.GetNamespace("MAPI")
         try:
             namespace.Logon(None, None, False, False)
-        except:
+        except Exception as logon_error:
+            print(f"Warning: Outlook logon failed: {logon_error}")
             pass
         return namespace
 
@@ -121,8 +122,10 @@ def search_mails(query_params: dict):
                     continue
 
                 if body_contains:
-                    body_text = (item.Body or "").lower()
-                    if body_contains.lower() not in body_text:
+                    body_text = getattr(item, "Body", "") or ""
+                    if len(body_text) > 10000:  # Limit body size for performance
+                        body_text = body_text[:10000]
+                    if body_contains.lower() not in body_text.lower():
                         continue
 
                 results.append({
@@ -183,5 +186,6 @@ def get_folder_by_id(entry_id):
     namespace = get_outlook_namespace()
     try:
         return namespace.GetFolderFromID(entry_id)
-    except:
+    except Exception as folder_error:
+        print(f"Warning: Could not access folder by ID {entry_id}: {folder_error}")
         return None

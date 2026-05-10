@@ -30,5 +30,5 @@ def get_db():
         db.close()
 
 def init_db():
-    from app.models.mail import Mail
+    from ..models.mail import Mail
     Base.metadata.create_all(bind=engine)

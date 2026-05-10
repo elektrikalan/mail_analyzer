@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
-from app.models.mail import Mail
-from app.services.analyzer_service import analyze_mail_content
+from ..models.mail import Mail
+from ..services.analyzer_service import analyze_mail_content
 
 def process_mail(db: Session, mail_data: dict):
     """
