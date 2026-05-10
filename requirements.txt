@@ -1,13 +1,7 @@
-fastapi
-uvicorn
 sqlalchemy
-psycopg2-binary
-python-dotenv
-pydantic
 pywin32
 pandas
 openpyxl
-python-multipart
 customtkinter
 pillow
 CTkTable

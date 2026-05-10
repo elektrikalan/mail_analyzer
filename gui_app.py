@@ -1,333 +1,487 @@
 import customtkinter as ctk
-from CTkTable import *
 from PIL import Image
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
-import sys
-import os
+import sys, os, logging
 
-# Add backend to path
-sys.path.append(os.path.join(os.getcwd(), "backend"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from backend.app.core.database import init_db, SessionLocal
 from backend.app.models.mail import Mail
-from backend.app.services.outlook_service import enumerate_all_folders, search_mails, extract_mails
+from backend.app.services.outlook_service import (
+    enumerate_stores_tree, extract_mails, search_mails
+)
 from backend.app.services.analyzer_service import analyze_mail_content
 from backend.app.workers.scan_worker import process_mail
 
-# Appearance Settings
+logging.basicConfig(level=logging.WARNING)
+
 ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue") # We will override specific colors
+ctk.set_default_color_theme("blue")
 
-# Professional Color Palette
-COLORS = {
-    "bg": "#0f172a",         # Deep Slate Blue
-    "sidebar": "#1e293b",    # Slate 800
-    "accent": "#6366f1",     # Indigo 500
-    "accent_hover": "#4f46e5",
-    "card_bg": "#1e293b",
-    "text_main": "#f8fafc",
-    "text_dim": "#94a3b8",
-    "danger": "#ef4444",
-    "success": "#10b981",
-    "warning": "#f59e0b"
-}
+BG      = "#0f172a"
+SIDE    = "#1e293b"
+CARD    = "#1e293b"
+ACCENT  = "#6366f1"
+AHOVER  = "#4f46e5"
+TMAIN   = "#f8fafc"
+TDIM    = "#94a3b8"
+DANGER  = "#ef4444"
+SUCCESS = "#10b981"
+WARN    = "#f59e0b"
+ROW_ODD = "#162032"
+ROW_EVN = "#1e293b"
 
-class MailAnalyzerPro(ctk.CTk):
+
+class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-
-        self.title("Mail Analyzer Pro - Professional Edition")
-        self.geometry("1300x850")
-        self.configure(fg_color=COLORS["bg"])
-        
-        # Load Icons
-        self.load_assets()
-        
-        # Set Window Icon
+        self.title("Mail Analyzer Pro")
+        self.geometry("1400x900")
+        self.configure(fg_color=BG)
         try:
             self.iconbitmap("assets/icon.ico")
-        except Exception as icon_error:
-            print(f"Warning: Could not load window icon: {icon_error}")
+        except Exception:
             pass
-            
-        # Initialize DB
+
         init_db()
-        
-        # Layout Config
+
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
-        # --- Sidebar ---
-        self.sidebar = ctk.CTkFrame(self, width=240, corner_radius=0, fg_color=COLORS["sidebar"])
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(6, weight=1)
-        
-        # Logo Section
-        self.logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.logo_frame.grid(row=0, column=0, padx=20, pady=(30, 40))
-        
+
+        self._build_sidebar()
+        self._build_main()
+        self._build_statusbar()
+        self.show_explorer()
+
+    def _build_sidebar(self):
+        sb = ctk.CTkFrame(self, width=220, corner_radius=0, fg_color=SIDE)
+        sb.grid(row=0, column=0, sticky="nsew")
+        sb.grid_propagate(False)
+        sb.grid_rowconfigure(10, weight=1)
+
         try:
-            logo_img = ctk.CTkImage(Image.open("assets/icon.png"), size=(40, 40))
-            self.logo_icon = ctk.CTkLabel(self.logo_frame, image=logo_img, text="")
-            self.logo_icon.pack(side="left", padx=(0, 10))
-        except Exception as logo_error:
-            print(f"Warning: Could not load logo image: {logo_error}")
+            img = ctk.CTkImage(Image.open("assets/icon.png"), size=(36, 36))
+            ctk.CTkLabel(sb, image=img, text="").grid(row=0, column=0, pady=(24, 4))
+        except Exception:
             pass
-            
-        self.logo_text = ctk.CTkLabel(self.logo_frame, text="ANALYZER", font=ctk.CTkFont(size=18, weight="bold"))
-        self.logo_text.pack(side="left")
-        
-        # Navigation Buttons
-        self.nav_dashboard = self.create_nav_btn("Dashboard", 1, self.show_dashboard)
-        self.nav_explorer = self.create_nav_btn("PST Explorer", 2, self.show_browser)
-        self.nav_search = self.create_nav_btn("Global Search", 3, self.show_search)
-        self.nav_results = self.create_nav_btn("Analysis Results", 4, self.show_results)
-        
-        # --- Main Content ---
-        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_container.grid(row=0, column=1, padx=30, pady=30, sticky="nsew")
-        self.main_container.grid_columnconfigure(0, weight=1)
-        self.main_container.grid_rowconfigure(0, weight=1)
-        
-        # --- Footer / Status ---
-        self.status_bar = ctk.CTkFrame(self, height=30, fg_color=COLORS["sidebar"], corner_radius=0)
-        self.status_bar.grid(row=1, column=0, columnspan=2, sticky="we")
-        
-        self.status_text = ctk.CTkLabel(self.status_bar, text="System Ready", font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"])
-        self.status_text.pack(side="left", padx=20)
-        
-        self.show_dashboard()
 
-    def load_assets(self):
-        # We could load more specific icons here if they existed
-        pass
+        ctk.CTkLabel(sb, text="MAIL ANALYZER", font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=ACCENT).grid(row=1, column=0, padx=16, pady=(0, 20))
 
-    def create_nav_btn(self, text, row, command):
-        btn = ctk.CTkButton(self.sidebar, text=text, height=45, fg_color="transparent", 
-                           text_color=COLORS["text_dim"], hover_color="#2d3748", anchor="w",
-                           font=ctk.CTkFont(size=14, weight="normal"), command=command)
-        btn.grid(row=row, column=0, padx=20, pady=5, sticky="ew")
-        return btn
+        self._nav_btns = {}
+        nav_items = [
+            ("📁  Explorer",    "explorer",   self.show_explorer),
+            ("🔍  Arama",       "search",     self.show_search),
+            ("📊  İstatistik",  "stats",      self.show_stats),
+            ("📋  Sonuçlar",    "results",    self.show_results),
+        ]
+        for i, (label, key, cmd) in enumerate(nav_items, start=2):
+            btn = ctk.CTkButton(sb, text=label, height=42, fg_color="transparent",
+                                text_color=TDIM, hover_color="#2d3748", anchor="w",
+                                font=ctk.CTkFont(size=13), command=cmd)
+            btn.grid(row=i, column=0, padx=12, pady=3, sticky="ew")
+            self._nav_btns[key] = btn
+        self._sidebar = sb
 
-    def set_active_nav(self, active_btn):
-        for btn in [self.nav_dashboard, self.nav_explorer, self.nav_search, self.nav_results]:
-            btn.configure(fg_color="transparent", text_color=COLORS["text_dim"])
-        active_btn.configure(fg_color=COLORS["accent"], text_color=COLORS["text_main"])
+    def _set_nav(self, key):
+        for k, b in self._nav_btns.items():
+            if k == key:
+                b.configure(fg_color=ACCENT, text_color=TMAIN)
+            else:
+                b.configure(fg_color="transparent", text_color=TDIM)
 
-    def clear_main(self):
-        for widget in self.main_container.winfo_children():
-            widget.destroy()
+    def _build_main(self):
+        self._main = ctk.CTkFrame(self, fg_color="transparent")
+        self._main.grid(row=0, column=1, padx=24, pady=24, sticky="nsew")
+        self._main.grid_columnconfigure(0, weight=1)
+        self._main.grid_rowconfigure(0, weight=1)
 
-    def show_dashboard(self):
-        self.clear_main()
-        self.set_active_nav(self.nav_dashboard)
-        
-        db = SessionLocal()
-        total = db.query(Mail).count()
-        high_risk = db.query(Mail).filter(Mail.risk_score >= 50).count()
-        db.close()
-        
-        # Header
-        header = ctk.CTkLabel(self.main_container, text="Security Dashboard", font=ctk.CTkFont(size=26, weight="bold"), anchor="w")
-        header.pack(fill="x", pady=(0, 30))
-        
-        # Cards Container
-        cards_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
-        cards_frame.pack(fill="x")
-        cards_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        
-        self.create_pro_card(cards_frame, "Analyzed Records", str(total), 0, COLORS["accent"])
-        self.create_pro_card(cards_frame, "Threats Detected", str(high_risk), 1, COLORS["danger"])
-        self.create_pro_card(cards_frame, "Stores Connected", "Calculating...", 2, COLORS["success"])
-        
-        # Recent Activity Table
-        act_lbl = ctk.CTkLabel(self.main_container, text="Recent Security Findings", font=ctk.CTkFont(size=18, weight="bold"), anchor="w")
-        act_lbl.pack(fill="x", pady=(40, 15))
-        
-        self.show_compact_results()
+    def _build_statusbar(self):
+        bar = ctk.CTkFrame(self, height=28, fg_color=SIDE, corner_radius=0)
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self._status = ctk.CTkLabel(bar, text="Hazır", font=ctk.CTkFont(size=11),
+                                    text_color=TDIM)
+        self._status.pack(side="left", padx=16)
 
-    def create_pro_card(self, parent, title, value, col, accent_color):
-        card = ctk.CTkFrame(parent, fg_color=COLORS["card_bg"], corner_radius=15, height=160)
-        card.grid(row=0, column=col, padx=10, sticky="nsew")
-        card.grid_propagate(False)
-        
-        # Accent Border/Indicator
-        line = ctk.CTkFrame(card, width=4, fg_color=accent_color, corner_radius=2)
-        line.pack(side="left", fill="y", padx=(15, 0), pady=15)
-        
-        content = ctk.CTkFrame(card, fg_color="transparent")
-        content.pack(side="left", fill="both", expand=True, padx=20, pady=20)
-        
-        t_lbl = ctk.CTkLabel(content, text=title.upper(), font=ctk.CTkFont(size=11, weight="bold"), text_color=COLORS["text_dim"])
-        t_lbl.pack(anchor="w")
-        
-        v_lbl = ctk.CTkLabel(content, text=value, font=ctk.CTkFont(size=32, weight="bold"), text_color=COLORS["text_main"])
-        v_lbl.pack(anchor="w", pady=(5, 0))
+    def _set_status(self, txt):
+        self.after(0, lambda: self._status.configure(text=txt))
 
-    def show_browser(self):
-        self.clear_main()
-        self.set_active_nav(self.nav_explorer)
-        
-        header = ctk.CTkLabel(self.main_container, text="PST & Mailbox Explorer", font=ctk.CTkFont(size=26, weight="bold"), anchor="w")
-        header.pack(fill="x", pady=(0, 20))
-        
-        container = ctk.CTkFrame(self.main_container, fg_color=COLORS["card_bg"], corner_radius=15)
-        container.pack(fill="both", expand=True)
-        
-        # Tree Styling
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background="#1e293b", foreground="#f8fafc", fieldbackground="#1e293b", borderwidth=0, rowheight=30)
-        style.map("Treeview", background=[('selected', '#6366f1')])
-        
-        self.tree = ttk.Treeview(container, columns=("Items", "Store"), show="tree headings")
-        self.tree.heading("#0", text="Folder")
-        self.tree.heading("Items", text="Mails")
-        self.tree.heading("Store", text="Source")
-        self.tree.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        btn_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
-        btn_frame.pack(fill="x", pady=(20, 0))
-        
-        scan_btn = ctk.CTkButton(btn_frame, text="SCAN SELECTED FOLDER", height=45, fg_color=COLORS["accent"], 
-                                hover_color=COLORS["accent_hover"], font=ctk.CTkFont(weight="bold"),
-                                command=self.start_folder_scan)
-        scan_btn.pack(side="right")
-        
-        threading.Thread(target=self.load_folders_data, daemon=True).start()
+    def _clear_main(self):
+        for w in self._main.winfo_children():
+            w.destroy()
 
-    def load_folders_data(self):
-        self.status_text.configure(text="Tuning into Outlook...")
-        folders = enumerate_all_folders()
-        stores = {}
-        for f in folders:
-            store = f["store"]
-            if store not in stores:
-                stores[store] = self.tree.insert("", "end", text=store, open=True)
-            self.tree.insert(stores[store], "end", text=f["name"], values=(f["item_count"], f["store"]), tags=(f["entry_id"],))
-        self.status_text.configure(text=f"Connected to {len(folders)} folders.")
+    # ──────────────────────────── EXPLORER ────────────────────────────
+    def show_explorer(self):
+        self._clear_main()
+        self._set_nav("explorer")
 
-    def start_folder_scan(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Selection", "Please select a folder to scan.")
+        ctk.CTkLabel(self._main, text="PST & Mailbox Explorer",
+                     font=ctk.CTkFont(size=22, weight="bold"), anchor="w").pack(fill="x", pady=(0, 12))
+
+        pane = tk.PanedWindow(self._main, orient=tk.HORIZONTAL, bg=BG, sashwidth=6, sashrelief="flat")
+        pane.pack(fill="both", expand=True)
+
+        # Left: folder tree
+        left = ctk.CTkFrame(pane, fg_color=CARD, corner_radius=12)
+        pane.add(left, minsize=260)
+
+        self._style_tree()
+        self._tree = ttk.Treeview(left, show="tree headings",
+                                   columns=("count",), selectmode="browse")
+        self._tree.heading("#0",    text="Klasör")
+        self._tree.heading("count", text="Mail")
+        self._tree.column("#0",    width=220)
+        self._tree.column("count", width=60, anchor="center")
+        self._tree.pack(fill="both", expand=True, padx=8, pady=8)
+        self._tree.bind("<<TreeviewSelect>>", self._on_folder_select)
+
+        # Right: mail list
+        right = ctk.CTkFrame(pane, fg_color=CARD, corner_radius=12)
+        pane.add(right, minsize=400)
+
+        self._mail_list = ttk.Treeview(right,
+            columns=("subject", "sender", "date"),
+            show="headings", selectmode="browse")
+        for col, lbl, w in [("subject","Konu",320),("sender","Gönderen",200),("date","Tarih",130)]:
+            self._mail_list.heading(col, text=lbl)
+            self._mail_list.column(col, width=w)
+        self._mail_list.pack(fill="both", expand=True, padx=8, pady=8)
+        self._mail_list.bind("<Double-1>", self._on_mail_double_click)
+
+        # Scan btn
+        btn_row = ctk.CTkFrame(self._main, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(10, 0))
+        ctk.CTkButton(btn_row, text="Seçili Klasörü Tara & Kaydet",
+                      height=40, fg_color=ACCENT, hover_color=AHOVER,
+                      font=ctk.CTkFont(weight="bold"),
+                      command=self._start_scan).pack(side="right")
+
+        threading.Thread(target=self._load_tree, daemon=True).start()
+
+    def _style_tree(self):
+        s = ttk.Style()
+        s.theme_use("default")
+        s.configure("Treeview", background=CARD, foreground=TMAIN,
+                    fieldbackground=CARD, borderwidth=0, rowheight=26)
+        s.map("Treeview", background=[("selected", ACCENT)])
+        s.configure("Treeview.Heading", background=SIDE, foreground=TDIM, borderwidth=0)
+
+    def _load_tree(self):
+        self._set_status("Outlook klasörleri yükleniyor...")
+        try:
+            stores = enumerate_stores_tree()
+        except Exception as e:
+            self._set_status(f"Hata: {e}")
             return
-            
-        tags = self.tree.item(selected[0])["tags"]
-        if not tags: return
-        entry_id = tags[0]
-        
-        self.status_text.configure(text="Scanning folder... Please wait.")
-        threading.Thread(target=self.run_scan, args=(entry_id,), daemon=True).start()
 
-    def run_scan(self, entry_id):
-        from backend.app.services.outlook_service import get_folder_by_id
-        folder_obj = get_folder_by_id(entry_id)
-        if not folder_obj:
-            self.after(0, lambda: messagebox.showerror("Error", "Could not access folder."))
+        self._folder_map = {}  # iid -> entry_id
+
+        def insert_node(parent_iid, node):
+            iid = self._tree.insert(parent_iid, "end",
+                                    text=node["name"],
+                                    values=(node["item_count"],),
+                                    open=(parent_iid == ""))
+            self._folder_map[iid] = node["entry_id"]
+            for child in node.get("children", []):
+                insert_node(iid, child)
+
+        for store in stores:
+            store_iid = self._tree.insert("", "end",
+                                          text=f"🗄  {store['store']}",
+                                          values=("",),
+                                          open=True)
+            for child in store.get("children", []):
+                insert_node(store_iid, child)
+
+        total = sum(s["item_count"] for s in stores)
+        self._set_status(f"{len(stores)} store yüklendi.")
+
+    def _on_folder_select(self, _event):
+        sel = self._tree.selection()
+        if not sel:
             return
-            
-        mails = extract_mails(folder_obj)
+        iid = sel[0]
+        entry_id = self._folder_map.get(iid)
+        if not entry_id:
+            return
+        self._mail_list.delete(*self._mail_list.get_children())
+        self._set_status("Mailler yükleniyor...")
+        threading.Thread(target=self._load_mails, args=(entry_id,), daemon=True).start()
+
+    def _load_mails(self, entry_id):
+        mails = extract_mails(entry_id, limit=300)
+        self.after(0, lambda: self._populate_mail_list(mails))
+
+    def _populate_mail_list(self, mails):
+        self._mail_list.delete(*self._mail_list.get_children())
+        self._current_mails = mails
+        for m in mails:
+            dt = str(m.get("received_at", ""))[:16]
+            self._mail_list.insert("", "end",
+                values=(m.get("subject","")[:80], m.get("sender",""), dt))
+        self._set_status(f"{len(mails)} mail gösteriliyor.")
+
+    def _on_mail_double_click(self, _event):
+        sel = self._mail_list.selection()
+        if not sel:
+            return
+        idx = self._mail_list.index(sel[0])
+        mails = getattr(self, "_current_mails", [])
+        if idx < len(mails):
+            self._show_mail_detail(mails[idx])
+
+    def _show_mail_detail(self, mail):
+        win = ctk.CTkToplevel(self)
+        win.title(mail.get("subject", "Mail Detayı"))
+        win.geometry("760x560")
+        win.configure(fg_color=BG)
+
+        info = (f"Konu:     {mail.get('subject','')}\n"
+                f"Gönderen: {mail.get('sender','')}\n"
+                f"Tarih:    {str(mail.get('received_at',''))[:19]}\n"
+                f"Klasör:   {mail.get('folder_path','')}")
+        ctk.CTkLabel(win, text=info, font=ctk.CTkFont(size=12),
+                     text_color=TDIM, justify="left").pack(anchor="w", padx=20, pady=(16,8))
+        ctk.CTkLabel(win, text="─"*80, text_color="#334155").pack(fill="x", padx=20)
+
+        tb = ctk.CTkTextbox(win, fg_color=CARD, text_color=TMAIN, wrap="word")
+        tb.pack(fill="both", expand=True, padx=20, pady=12)
+        tb.insert("1.0", mail.get("body",""))
+        tb.configure(state="disabled")
+
+    def _start_scan(self):
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showwarning("Seçim", "Lütfen bir klasör seçin.")
+            return
+        iid = sel[0]
+        entry_id = self._folder_map.get(iid)
+        if not entry_id:
+            messagebox.showwarning("Seçim", "Bu bir store köküdür, alt klasör seçin.")
+            return
+        self._set_status("Tarama başladı...")
+        threading.Thread(target=self._run_scan, args=(entry_id,), daemon=True).start()
+
+    def _run_scan(self, entry_id):
+        mails = extract_mails(entry_id, limit=500)
         db = SessionLocal()
         try:
-            count = 0
-            total_mails = len(mails)
-            for mail in mails:
-                analysis = analyze_mail_content(mail["body"])
-                process_mail(db, {**mail, **analysis})
-                count += 1
-                self.after(0, lambda c=count, t=total_mails: self.status_text.configure(text=f"Processed {c}/{t} mails..."))
+            for i, m in enumerate(mails, 1):
+                analysis = analyze_mail_content(m.get("body",""))
+                process_mail(db, {**m, **analysis})
+                if i % 10 == 0:
+                    self._set_status(f"Tarandı: {i}/{len(mails)}")
         finally:
             db.close()
-        self.after(0, lambda: messagebox.showinfo("Scan Complete", f"Successfully analyzed {len(mails)} mails."))
-        self.after(0, self.show_results)
+        self.after(0, lambda: messagebox.showinfo("Tamamlandı", f"{len(mails)} mail kaydedildi."))
+        self._set_status(f"Tarama tamamlandı: {len(mails)} mail.")
 
+    # ──────────────────────────── SEARCH ────────────────────────────
     def show_search(self):
-        self.clear_main()
-        self.set_active_nav(self.nav_search)
-        
-        header = ctk.CTkLabel(self.main_container, text="Advanced Forensic Search", font=ctk.CTkFont(size=26, weight="bold"), anchor="w")
-        header.pack(fill="x", pady=(0, 30))
-        
-        search_box = ctk.CTkFrame(self.main_container, fg_color=COLORS["card_bg"], corner_radius=15)
-        search_box.pack(fill="x")
-        
-        self.sub_entry = self.create_input(search_box, "Subject Pattern:", 0)
-        self.body_entry = self.create_input(search_box, "Content Keywords:", 1)
-        
-        s_btn = ctk.CTkButton(search_box, text="EXECUTE SEARCH", height=45, fg_color=COLORS["accent"], font=ctk.CTkFont(weight="bold"), command=self.run_global_search)
-        s_btn.pack(pady=(20, 0))
+        self._clear_main()
+        self._set_nav("search")
 
-    def create_input(self, parent, label, row):
-        f = ctk.CTkFrame(parent, fg_color="transparent")
-        f.pack(fill="x", padx=40, pady=10)
-        ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=13), text_color=COLORS["text_dim"]).pack(side="left")
-        e = ctk.CTkEntry(f, width=400, height=35, fg_color="#0f172a", border_color="#334155")
-        e.pack(side="right")
-        return e
+        ctk.CTkLabel(self._main, text="Global Arama",
+                     font=ctk.CTkFont(size=22, weight="bold"), anchor="w").pack(fill="x", pady=(0,16))
 
-    def show_results(self, compact=False):
-        if not compact:
-            self.clear_main()
-            self.set_active_nav(self.nav_results)
-            header = ctk.CTkLabel(self.main_container, text="Analysis & Detection Log", font=ctk.CTkFont(size=26, weight="bold"), anchor="w")
-            header.pack(fill="x", pady=(0, 20))
-            
-        container = ctk.CTkFrame(self.main_container, fg_color=COLORS["card_bg"], corner_radius=15)
-        container.pack(fill="both", expand=True)
-        
+        form = ctk.CTkFrame(self._main, fg_color=CARD, corner_radius=12)
+        form.pack(fill="x")
+
+        def field(parent, lbl):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", padx=32, pady=6)
+            ctk.CTkLabel(row, text=lbl, width=140, anchor="w",
+                         text_color=TDIM, font=ctk.CTkFont(size=12)).pack(side="left")
+            e = ctk.CTkEntry(row, height=34, fg_color="#0f172a", border_color="#334155")
+            e.pack(side="left", fill="x", expand=True)
+            return e
+
+        ctk.CTkLabel(form, text="", height=8).pack()
+        self._s_subject  = field(form, "Konu içerir:")
+        self._s_sender   = field(form, "Gönderen:")
+        self._s_body     = field(form, "İçerik (anahtar kelime):")
+        ctk.CTkLabel(form, text="", height=8).pack()
+
+        ctk.CTkButton(form, text="  🔍  ARA  ", height=40,
+                      fg_color=ACCENT, hover_color=AHOVER,
+                      font=ctk.CTkFont(weight="bold", size=13),
+                      command=self._run_search).pack(pady=(0,16))
+
+        # Results area
+        res_lbl = ctk.CTkLabel(self._main, text="Sonuçlar",
+                               font=ctk.CTkFont(size=15, weight="bold"), anchor="w")
+        res_lbl.pack(fill="x", pady=(20,6))
+        self._s_count_lbl = ctk.CTkLabel(self._main, text="",
+                                          font=ctk.CTkFont(size=12), text_color=TDIM, anchor="w")
+        self._s_count_lbl.pack(fill="x")
+
+        res_frame = ctk.CTkFrame(self._main, fg_color=CARD, corner_radius=12)
+        res_frame.pack(fill="both", expand=True, pady=(6,0))
+
+        self._search_tree = ttk.Treeview(res_frame,
+            columns=("subject","sender","folder","date"),
+            show="headings", selectmode="browse")
+        for col, lbl, w in [("subject","Konu",300),("sender","Gönderen",180),
+                             ("folder","Klasör",200),("date","Tarih",120)]:
+            self._search_tree.heading(col, text=lbl)
+            self._search_tree.column(col, width=w)
+        sb2 = ttk.Scrollbar(res_frame, orient="vertical", command=self._search_tree.yview)
+        self._search_tree.configure(yscrollcommand=sb2.set)
+        sb2.pack(side="right", fill="y", pady=8)
+        self._search_tree.pack(fill="both", expand=True, padx=8, pady=8)
+        self._search_tree.bind("<Double-1>", self._on_search_double_click)
+        self._search_results = []
+
+    def _run_search(self):
+        params = {
+            "subject":       self._s_subject.get().strip(),
+            "sender":        self._s_sender.get().strip(),
+            "body_contains": self._s_body.get().strip(),
+        }
+        if not any(params.values()):
+            messagebox.showwarning("Arama", "En az bir alan doldurun.")
+            return
+        self._set_status("Aranıyor...")
+        self._s_count_lbl.configure(text="Aranıyor…")
+        threading.Thread(target=self._search_worker, args=(params,), daemon=True).start()
+
+    def _search_worker(self, params):
+        results = search_mails(params)
+        self.after(0, lambda: self._populate_search(results))
+
+    def _populate_search(self, results):
+        self._search_results = results
+        self._search_tree.delete(*self._search_tree.get_children())
+        for m in results:
+            dt = str(m.get("received_at",""))[:16]
+            self._search_tree.insert("", "end",
+                values=(m.get("subject","")[:80], m.get("sender",""),
+                        m.get("folder_path","")[-50:], dt))
+        total = len(results)
+        senders = len({m.get("sender","") for m in results})
+        self._s_count_lbl.configure(
+            text=f"Toplam {total} sonuç  •  {senders} farklı gönderen")
+        self._set_status(f"Arama tamamlandı: {total} sonuç.")
+
+    def _on_search_double_click(self, _event):
+        sel = self._search_tree.selection()
+        if not sel:
+            return
+        idx = self._search_tree.index(sel[0])
+        if idx < len(self._search_results):
+            self._show_mail_detail(self._search_results[idx])
+
+    # ──────────────────────────── STATS ────────────────────────────
+    def show_stats(self):
+        self._clear_main()
+        self._set_nav("stats")
+
+        ctk.CTkLabel(self._main, text="İstatistikler",
+                     font=ctk.CTkFont(size=22, weight="bold"), anchor="w").pack(fill="x", pady=(0,16))
+
         db = SessionLocal()
-        mails = db.query(Mail).order_by(Mail.risk_score.desc()).limit(50).all()
+        total   = db.query(Mail).count()
+        high    = db.query(Mail).filter(Mail.risk_score >= 50).count()
+        stores  = db.query(Mail.pst_source).distinct().count()
+        folders = db.query(Mail.folder_path).distinct().count()
+
+        from sqlalchemy import func
+        top_senders = (db.query(Mail.sender, func.count(Mail.id).label("cnt"))
+                       .group_by(Mail.sender).order_by(func.count(Mail.id).desc())
+                       .limit(10).all())
         db.close()
-        
-        table_values = [["SCORE", "SUBJECT", "SENDER", "PST SOURCE"]]
+
+        # Stat cards
+        cards = ctk.CTkFrame(self._main, fg_color="transparent")
+        cards.pack(fill="x", pady=(0,20))
+        cards.grid_columnconfigure((0,1,2,3), weight=1)
+
+        def card(parent, col, title, val, color):
+            f = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=12, height=110)
+            f.grid(row=0, column=col, padx=8, sticky="nsew")
+            f.grid_propagate(False)
+            accent = ctk.CTkFrame(f, width=4, fg_color=color, corner_radius=2)
+            accent.pack(side="left", fill="y", padx=(14,0), pady=14)
+            inner = ctk.CTkFrame(f, fg_color="transparent")
+            inner.pack(side="left", padx=16, pady=14)
+            ctk.CTkLabel(inner, text=title.upper(), font=ctk.CTkFont(size=10, weight="bold"),
+                         text_color=TDIM).pack(anchor="w")
+            ctk.CTkLabel(inner, text=str(val), font=ctk.CTkFont(size=28, weight="bold"),
+                         text_color=TMAIN).pack(anchor="w")
+
+        card(cards, 0, "Toplam Mail",  total,   ACCENT)
+        card(cards, 1, "Yüksek Risk",  high,    DANGER)
+        card(cards, 2, "Store Sayısı", stores,  SUCCESS)
+        card(cards, 3, "Klasör Sayısı",folders, WARN)
+
+        # Top senders table
+        ctk.CTkLabel(self._main, text="En Çok Gönderen (DB'deki taranmış mailler)",
+                     font=ctk.CTkFont(size=15, weight="bold"), anchor="w").pack(fill="x", pady=(4,8))
+
+        tbl_frame = ctk.CTkFrame(self._main, fg_color=CARD, corner_radius=12)
+        tbl_frame.pack(fill="both", expand=True)
+
+        tbl = ttk.Treeview(tbl_frame, columns=("sender","count"), show="headings")
+        tbl.heading("sender", text="Gönderen")
+        tbl.heading("count",  text="Mail Sayısı")
+        tbl.column("sender", width=420)
+        tbl.column("count",  width=120, anchor="center")
+        tbl.pack(fill="both", expand=True, padx=10, pady=10)
+
+        for sender, cnt in top_senders:
+            tbl.insert("", "end", values=(sender, cnt))
+
+    # ──────────────────────────── RESULTS ────────────────────────────
+    def show_results(self):
+        self._clear_main()
+        self._set_nav("results")
+
+        ctk.CTkLabel(self._main, text="Analiz & Tespit Logu",
+                     font=ctk.CTkFont(size=22, weight="bold"), anchor="w").pack(fill="x", pady=(0,12))
+
+        db = SessionLocal()
+        mails = db.query(Mail).order_by(Mail.risk_score.desc()).limit(200).all()
+        db.close()
+
+        frame = ctk.CTkFrame(self._main, fg_color=CARD, corner_radius=12)
+        frame.pack(fill="both", expand=True)
+
+        cols = ("score","subject","sender","folder","source")
+        tree = ttk.Treeview(frame, columns=cols, show="headings")
+        for col, lbl, w in [("score","Risk",60),("subject","Konu",280),
+                             ("sender","Gönderen",180),("folder","Klasör",200),
+                             ("source","Store",130)]:
+            tree.heading(col, text=lbl)
+            tree.column(col, width=w, anchor="center" if col=="score" else "w")
+
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y", pady=8)
+        tree.pack(fill="both", expand=True, padx=8, pady=8)
+
         for m in mails:
-            table_values.append([f"{m.risk_score}%", m.subject[:40], m.sender, m.pst_source])
-            
-        table = CTkTable(container, values=table_values, header_color=COLORS["sidebar"], 
-                         text_color=COLORS["text_main"], hover_color="#334155")
-        table.pack(fill="both", expand=True, padx=15, pady=15)
-        
-        if not compact:
-            ctk.CTkButton(self.main_container, text="EXPORT FORENSIC REPORT (XLSX)", fg_color=COLORS["success"], 
-                          font=ctk.CTkFont(weight="bold"), command=self.export_report).pack(pady=(20, 0), side="right")
+            tree.insert("", "end", values=(
+                f"{m.risk_score}%",
+                (m.subject or "")[:60],
+                m.sender or "",
+                (m.folder_path or "")[-50:],
+                m.pst_source or ""))
 
-    def show_compact_results(self):
-        self.show_results(compact=True)
+        ctk.CTkButton(self._main, text="📥 XLSX Rapor Al",
+                      fg_color=SUCCESS, hover_color="#059669",
+                      font=ctk.CTkFont(weight="bold"),
+                      command=self._export).pack(side="right", pady=(12,0))
 
-    def export_report(self):
+    def _export(self):
         from backend.app.services.report_service import generate_excel_report
         db = SessionLocal()
         path = generate_excel_report(db)
         db.close()
         if path:
-            messagebox.showinfo("Export Success", f"Report saved to:\n{path}")
+            messagebox.showinfo("Export", f"Kaydedildi:\n{path}")
 
-    def run_global_search(self):
-        subject = self.sub_entry.get()
-        body = self.body_entry.get()
-        
-        self.status_text.configure(text="Executing global search across all PSTs...")
-        
-        def worker():
-            params = {"subject": subject, "body_contains": body}
-            found = search_mails(params)
-            
-            db = SessionLocal()
-            try:
-                for mail in found:
-                    analysis = analyze_mail_content(mail["body"])
-                    process_mail(db, {**mail, **analysis})
-            finally:
-                db.close()
-                
-            self.after(0, lambda: messagebox.showinfo("Search Complete", f"Found and analyzed {len(found)} matching mails."))
-            self.after(0, self.show_results)
-            
-        threading.Thread(target=worker, daemon=True).start()
 
 if __name__ == "__main__":
-    app = MailAnalyzerPro()
-    app.mainloop()
+    App().mainloop()
