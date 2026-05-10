@@ -13,6 +13,27 @@ import logging
 
 log = logging.getLogger(__name__)
 
+
+def is_classic_outlook_available() -> bool:
+    """
+    Returns True only if classic (COM-capable) Outlook is installed and running.
+    The new Outlook (PWA/Store app) does NOT expose a COM interface.
+    """
+    try:
+        import pythoncom, win32com.client
+        pythoncom.CoInitialize()
+        app = win32com.client.DispatchEx("Outlook.Application")
+        _ = app.Version          # forces actual COM call; raises if not registered
+        pythoncom.CoUninitialize()
+        return True
+    except Exception:
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -27,6 +48,44 @@ def _ns():
     except Exception:
         pass
     return ns
+
+
+def get_folder_by_id(entry_id):
+    namespace = _ns()
+    try:
+        folder = namespace.GetFolderFromID(entry_id)
+        return folder
+    except Exception as folder_error:
+        log.warning("Could not access folder by ID %s: %s", entry_id, folder_error)
+        return None
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def add_pst_store(pst_path: str):
+    """
+    Mounts a PST file into the current Outlook session using COM.
+    This works even if the user is using 'New Outlook' UI, provided 
+    the classic MAPI engine is installed on the system.
+    """
+    ns = _ns()
+    try:
+        # Check if already added
+        pst_abs = os.path.abspath(pst_path).lower()
+        for store in ns.Stores:
+            try:
+                if store.FilePath and os.path.abspath(store.FilePath).lower() == pst_abs:
+                    return True # Already there
+            except Exception:
+                continue
+        
+        ns.AddStore(pst_path)
+        return True
+    except Exception as e:
+        log.error("Failed to add PST store via COM: %s", e)
+        return False
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def _folder_dict(folder, store_name):

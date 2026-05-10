@@ -1,7 +1,7 @@
 import customtkinter as ctk
 from PIL import Image
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import threading
 import sys, os, logging
 
@@ -10,7 +10,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from backend.app.core.database import init_db, SessionLocal
 from backend.app.models.mail import Mail
 from backend.app.services.outlook_service import (
-    enumerate_stores_tree, extract_mails, search_mails
+    is_classic_outlook_available, enumerate_stores_tree, extract_mails, search_mails, add_pst_store
+)
+from backend.app.services.pst_service import (
+    is_pypff_available, read_pst_tree, extract_mails_from_pst, search_pst
 )
 from backend.app.services.analyzer_service import analyze_mail_content
 from backend.app.workers.scan_worker import process_mail
@@ -46,6 +49,8 @@ class App(ctk.CTk):
             pass
 
         init_db()
+        self._pst_files = []          # list of PST paths added by user (PST mode)
+        self._mode = self._detect_mode()
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -54,6 +59,12 @@ class App(ctk.CTk):
         self._build_main()
         self._build_statusbar()
         self.show_explorer()
+
+    def _detect_mode(self) -> str:
+        """Returns 'com' for classic Outlook, 'pst' for new Outlook / no Outlook."""
+        if is_classic_outlook_available():
+            return "com"
+        return "pst"
 
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=220, corner_radius=0, fg_color=SIDE)
@@ -117,8 +128,28 @@ class App(ctk.CTk):
         self._clear_main()
         self._set_nav("explorer")
 
-        ctk.CTkLabel(self._main, text="PST & Mailbox Explorer",
-                     font=ctk.CTkFont(size=22, weight="bold"), anchor="w").pack(fill="x", pady=(0, 12))
+        # Mode badge
+        mode_color = SUCCESS if self._mode == "com" else WARN
+        mode_label = "🟢 Classic Outlook (COM)" if self._mode == "com" else "🟡 PST Dosya Modu (Yeni Outlook)"
+        hdr = ctk.CTkFrame(self._main, fg_color="transparent")
+        hdr.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(hdr, text="PST & Mailbox Explorer",
+                     font=ctk.CTkFont(size=22, weight="bold")).pack(side="left")
+        ctk.CTkLabel(hdr, text=mode_label, font=ctk.CTkFont(size=11),
+                     text_color=mode_color).pack(side="right", padx=4)
+
+        # PST mode: show file adder
+        if self._mode == "pst":
+            pst_bar = ctk.CTkFrame(self._main, fg_color=CARD, corner_radius=10)
+            pst_bar.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(pst_bar, text="PST dosyası ekle:",
+                         text_color=TDIM, font=ctk.CTkFont(size=12)).pack(side="left", padx=12, pady=8)
+            ctk.CTkButton(pst_bar, text="+ PST Ekle", width=110, height=32,
+                          fg_color=ACCENT, hover_color=AHOVER,
+                          command=self._add_pst_file).pack(side="left", padx=4, pady=8)
+            self._pst_label = ctk.CTkLabel(pst_bar, text=self._pst_summary(),
+                                           text_color=TDIM, font=ctk.CTkFont(size=11))
+            self._pst_label.pack(side="left", padx=12)
 
         pane = tk.PanedWindow(self._main, orient=tk.HORIZONTAL, bg=BG, sashwidth=6, sashrelief="flat")
         pane.pack(fill="both", expand=True)
@@ -150,7 +181,7 @@ class App(ctk.CTk):
         self._mail_list.pack(fill="both", expand=True, padx=8, pady=8)
         self._mail_list.bind("<Double-1>", self._on_mail_double_click)
 
-        # Scan btn
+        # Bottom button row
         btn_row = ctk.CTkFrame(self._main, fg_color="transparent")
         btn_row.pack(fill="x", pady=(10, 0))
         ctk.CTkButton(btn_row, text="Seçili Klasörü Tara & Kaydet",
@@ -159,6 +190,43 @@ class App(ctk.CTk):
                       command=self._start_scan).pack(side="right")
 
         threading.Thread(target=self._load_tree, daemon=True).start()
+
+    def _pst_summary(self) -> str:
+        if not self._pst_files:
+            return "Henüz PST dosyası eklenmedi"
+        names = [os.path.basename(p) for p in self._pst_files]
+        return "  |  ".join(names)
+
+    def _add_pst_file(self):
+        paths = filedialog.askopenfilenames(
+            title="PST / OST Dosyası Seç",
+            filetypes=[("PST / OST", "*.pst *.ost"), ("Tüm dosyalar", "*.*")]
+        )
+        if not paths:
+            return
+        
+        for p in paths:
+            if p not in self._pst_files:
+                self._pst_files.append(p)
+                # Fallback: If pypff is missing, try to mount via Outlook Engine
+                if not is_pypff_available():
+                    self._set_status(f"Outlook motoru ile bağlanıyor: {os.path.basename(p)}")
+                    add_pst_store(p)
+
+        try:
+            self._pst_label.configure(text=self._pst_summary())
+        except Exception:
+            pass
+
+        self._tree.delete(*self._tree.get_children())
+        self._folder_map = {}
+        
+        if is_pypff_available():
+            threading.Thread(target=self._load_tree_pst, daemon=True).start()
+        else:
+            # If no pypff, we use the COM-based tree loading even in PST mode
+            # since add_pst_store just attached it to the COM session.
+            threading.Thread(target=self._load_tree_com_logic, daemon=True).start()
 
     def _style_tree(self):
         s = ttk.Style()
@@ -169,6 +237,16 @@ class App(ctk.CTk):
         s.configure("Treeview.Heading", background=SIDE, foreground=TDIM, borderwidth=0)
 
     def _load_tree(self):
+        """Branch: COM mode."""
+        if self._mode == "pst":
+            if is_pypff_available():
+                self._load_tree_pst()
+            else:
+                self._load_tree_com_logic()
+            return
+        self._load_tree_com_logic()
+
+    def _load_tree_com_logic(self):
         self._set_status("Outlook klasörleri yükleniyor...")
         try:
             stores = enumerate_stores_tree()
@@ -176,42 +254,100 @@ class App(ctk.CTk):
             self._set_status(f"Hata: {e}")
             return
 
-        self._folder_map = {}  # iid -> entry_id
+        def update_ui():
+            if not self._tree.winfo_exists():
+                return
+            self._tree.delete(*self._tree.get_children())
+            self._folder_map = {}   # iid -> entry_id (COM) or dict (PST)
 
-        def insert_node(parent_iid, node):
-            iid = self._tree.insert(parent_iid, "end",
-                                    text=node["name"],
-                                    values=(node["item_count"],),
-                                    open=(parent_iid == ""))
-            self._folder_map[iid] = node["entry_id"]
-            for child in node.get("children", []):
-                insert_node(iid, child)
+            def insert_node(parent_iid, node):
+                iid = self._tree.insert(parent_iid, "end",
+                                        text=node["name"],
+                                        values=(node["item_count"],),
+                                        open=(parent_iid == ""))
+                self._folder_map[iid] = {"mode": "com", "entry_id": node["entry_id"]}
+                for child in node.get("children", []):
+                    insert_node(iid, child)
 
-        for store in stores:
-            store_iid = self._tree.insert("", "end",
-                                          text=f"🗄  {store['store']}",
-                                          values=("",),
-                                          open=True)
-            for child in store.get("children", []):
-                insert_node(store_iid, child)
+            for store in stores:
+                store_iid = self._tree.insert("", "end",
+                                              text=f"🗄  {store['store']}",
+                                              values=("",), open=True)
+                for child in store.get("children", []):
+                    insert_node(store_iid, child)
+            self._set_status(f"{len(stores)} store yüklendi.")
 
-        total = sum(s["item_count"] for s in stores)
-        self._set_status(f"{len(stores)} store yüklendi.")
+        self.after(0, update_ui)
+
+    def _load_tree_pst(self):
+        """Branch: PST file mode — reads each added PST via pypff."""
+        if not self._pst_files:
+            self._set_status("PST dosyası eklenmedi. '+ PST Ekle' butonunu kullanın.")
+            return
+        if not is_pypff_available():
+            self.after(0, lambda: messagebox.showerror(
+                "Eksik Kütüphane",
+                "PST okuma için 'libpff-python' paketi gerekli.\n"
+                "Yüklemek için: pip install libpff-python"))
+            return
+
+        pst_data = []
+        for pst_path in self._pst_files:
+            self._set_status(f"Okunuyor: {os.path.basename(pst_path)}")
+            try:
+                tree = read_pst_tree(pst_path)
+                pst_data.append((pst_path, tree))
+            except Exception as exc:
+                self._set_status(f"Hata ({os.path.basename(pst_path)}): {exc}")
+                continue
+
+        def update_ui():
+            if not self._tree.winfo_exists():
+                return
+            self._tree.delete(*self._tree.get_children())
+            self._folder_map = {}
+
+            def insert_pst_node(parent_iid, node):
+                iid = self._tree.insert(parent_iid, "end",
+                                        text=node["name"],
+                                        values=(node["item_count"],),
+                                        open=(parent_iid == ""))
+                self._folder_map[iid] = {
+                    "mode":       "pst",
+                    "pst_path":   node["_pst_path"],
+                    "index_path": node["_index_path"],
+                }
+                for child in node.get("children", []):
+                    insert_pst_node(iid, child)
+
+            for pst_path, tree in pst_data:
+                store_iid = self._tree.insert("", "end",
+                                              text=f"🗄  {os.path.basename(pst_path)}",
+                                              values=("",), open=True)
+                for child in tree.get("children", []):
+                    insert_pst_node(store_iid, child)
+
+            self._set_status(f"{len(self._pst_files)} PST yüklendi.")
+
+        self.after(0, update_ui)
 
     def _on_folder_select(self, _event):
         sel = self._tree.selection()
         if not sel:
             return
         iid = sel[0]
-        entry_id = self._folder_map.get(iid)
-        if not entry_id:
+        info = self._folder_map.get(iid)
+        if not info:
             return
         self._mail_list.delete(*self._mail_list.get_children())
         self._set_status("Mailler yükleniyor...")
-        threading.Thread(target=self._load_mails, args=(entry_id,), daemon=True).start()
+        threading.Thread(target=self._load_mails, args=(info,), daemon=True).start()
 
-    def _load_mails(self, entry_id):
-        mails = extract_mails(entry_id, limit=300)
+    def _load_mails(self, info: dict):
+        if info["mode"] == "com":
+            mails = extract_mails(info["entry_id"], limit=300)
+        else:
+            mails = extract_mails_from_pst(info["pst_path"], info["index_path"], limit=300)
         self.after(0, lambda: self._populate_mail_list(mails))
 
     def _populate_mail_list(self, mails):
@@ -257,19 +393,22 @@ class App(ctk.CTk):
             messagebox.showwarning("Seçim", "Lütfen bir klasör seçin.")
             return
         iid = sel[0]
-        entry_id = self._folder_map.get(iid)
-        if not entry_id:
+        info = self._folder_map.get(iid)
+        if not info:
             messagebox.showwarning("Seçim", "Bu bir store köküdür, alt klasör seçin.")
             return
         self._set_status("Tarama başladı...")
-        threading.Thread(target=self._run_scan, args=(entry_id,), daemon=True).start()
+        threading.Thread(target=self._run_scan, args=(info,), daemon=True).start()
 
-    def _run_scan(self, entry_id):
-        mails = extract_mails(entry_id, limit=500)
+    def _run_scan(self, info: dict):
+        if info["mode"] == "com":
+            mails = extract_mails(info["entry_id"], limit=500)
+        else:
+            mails = extract_mails_from_pst(info["pst_path"], info["index_path"], limit=500)
         db = SessionLocal()
         try:
             for i, m in enumerate(mails, 1):
-                analysis = analyze_mail_content(m.get("body",""))
+                analysis = analyze_mail_content(m.get("body", ""))
                 process_mail(db, {**m, **analysis})
                 if i % 10 == 0:
                     self._set_status(f"Tarandı: {i}/{len(mails)}")
@@ -348,8 +487,23 @@ class App(ctk.CTk):
         threading.Thread(target=self._search_worker, args=(params,), daemon=True).start()
 
     def _search_worker(self, params):
-        results = search_mails(params)
+        if self._mode == "com":
+            results = search_mails(params)
+        else:
+            # PST mode: search all added PST files
+            if not self._pst_files:
+                self.after(0, lambda: messagebox.showwarning(
+                    "PST Yok", "Önce Explorer'dan PST dosyası ekleyin."))
+                return
+            results = []
+            for p in self._pst_files:
+                try:
+                    results.extend(search_pst(p, params))
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).error("PST search error %s: %s", p, exc)
         self.after(0, lambda: self._populate_search(results))
+
 
     def _populate_search(self, results):
         self._search_results = results
